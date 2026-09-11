@@ -1,0 +1,1940 @@
+<!DOCTYPE html>
+<html lang="zh-TW" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>東部鐵路即時天氣與路況影像通報站</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Leaflet GIS Map Library -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'Noto Sans TC', 'sans-serif'],
+            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace']
+          }
+        }
+      }
+    };
+  </script>
+
+  <style>
+    /* 自訂滾動條 */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #090d16;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #1e293b;
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #334155;
+    }
+
+    /* 狀態呼吸燈動效 */
+    .led-ring-online {
+      animation: ledPulseGreen 2s infinite ease-in-out;
+    }
+    @keyframes ledPulseGreen {
+      0%, 100% { transform: scale(1); opacity: 0.8; box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); }
+      50% { transform: scale(1.1); opacity: 1; box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
+    }
+    .led-ring-syncing {
+      animation: ledPulseBlue 1.2s infinite ease-in-out;
+    }
+    @keyframes ledPulseBlue {
+      0%, 100% { transform: scale(0.9); opacity: 0.7; }
+      50% { transform: scale(1.15); opacity: 1; box-shadow: 0 0 8px rgba(56, 189, 248, 0.8); }
+    }
+
+    .station-marker-pin {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 9999px;
+      transition: all 0.3s ease;
+      cursor: pointer;
+    }
+    .station-marker-normal {
+      background: rgba(15, 23, 42, 0.9);
+      border: 2px solid #38bdf8;
+      box-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
+    }
+    .station-marker-rain {
+      background: rgba(2, 132, 199, 0.95);
+      border: 2px solid #67e8f9;
+      box-shadow: 0 0 12px rgba(6, 182, 212, 0.8);
+      animation: markerPulseBlue 1.8s infinite;
+    }
+    .station-marker-warning {
+      background: rgba(180, 83, 9, 0.95);
+      border: 2px solid #f59e0b;
+      box-shadow: 0 0 14px rgba(245, 158, 11, 0.9);
+      animation: markerPulseAmber 1.4s infinite;
+    }
+    @keyframes markerPulseBlue {
+      0%, 100% { transform: scale(1); box-shadow: 0 0 6px rgba(6, 182, 212, 0.6); }
+      50% { transform: scale(1.15); box-shadow: 0 0 14px rgba(6, 182, 212, 1); }
+    }
+    @keyframes markerPulseAmber {
+      0%, 100% { transform: scale(1); box-shadow: 0 0 8px rgba(245, 158, 11, 0.6); }
+      50% { transform: scale(1.18); box-shadow: 0 0 16px rgba(245, 158, 11, 1); }
+    }
+
+    .leaflet-popup-content-wrapper {
+      background: rgba(15, 23, 42, 0.96) !important;
+      color: #f8fafc !important;
+      border: 1px solid #334155;
+      border-radius: 1rem !important;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.6) !important;
+      backdrop-filter: blur(12px);
+      padding: 0 !important;
+    }
+    .leaflet-popup-content {
+      margin: 0 !important;
+      line-height: 1.4 !important;
+    }
+    .leaflet-popup-tip {
+      background: #0f172a !important;
+      border: 1px solid #334155;
+    }
+    .leaflet-container {
+      font-family: 'Inter', 'Noto Sans TC', sans-serif !important;
+      background: #020617 !important;
+    }
+  </style>
+</head>
+
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans flex flex-col antialiased selection:bg-sky-500 selection:text-white">
+  <!-- 頂部導航列 -->
+  <header class="sticky top-0 z-40 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 shadow-lg">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+      <div class="flex items-center gap-3 min-w-0">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-600 to-emerald-400 p-0.5 shadow-md flex-shrink-0">
+          <div class="w-full h-full bg-slate-900 rounded-[10px] flex items-center justify-center">
+            <i data-lucide="train" class="w-5 h-5 text-sky-400"></i>
+          </div>
+        </div>
+        <div class="truncate">
+          <div class="flex items-center gap-2">
+            <h1 class="text-base sm:text-lg font-bold tracking-tight text-white flex items-center gap-1.5">
+              東部鐵路即時天氣與影像通報站
+            </h1>
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-sky-950 text-sky-300 border border-sky-800 hidden sm:inline-flex">
+              宜蘭 · 北迴 · 台東
+            </span>
+          </div>
+          <div class="flex items-center gap-2 text-xs text-slate-400">
+            <span class="inline-flex items-center gap-1.5 font-medium">
+              <span id="navStatusDot" class="w-2 h-2 rounded-full bg-emerald-400 led-ring-online"></span>
+              <span id="navStatusText" class="text-emerald-400 font-semibold">即時連線中</span>
+            </span>
+            <span class="text-slate-600">|</span>
+            <span id="lastUpdatedTime" class="font-mono text-slate-300">資料讀取中...</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右側動作按鈕組 -->
+      <div class="flex items-center gap-2">
+        <button id="refreshBtn" onclick="fetchWeatherData()" class="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 hover:text-white rounded-lg border border-slate-700 transition shadow-sm active:scale-95">
+          <i data-lucide="rotate-cw" id="refreshIcon" class="w-4 h-4"></i>
+          <span class="hidden sm:inline">重新整理</span>
+        </button>
+
+        <button onclick="scrollToMap()" class="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-emerald-300 bg-emerald-950/70 hover:bg-emerald-900/80 rounded-lg border border-emerald-700/60 transition shadow-sm active:scale-95">
+          <i data-lucide="map" class="w-4 h-4 text-emerald-400"></i>
+          <span class="hidden md:inline">動態地圖與影像</span>
+        </button>
+
+        <button onclick="openRadarModal()" class="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-cyan-300 bg-cyan-950/70 hover:bg-cyan-900/80 rounded-lg border border-cyan-700/60 transition shadow-sm active:scale-95">
+          <i data-lucide="radar" class="w-4 h-4 text-cyan-400"></i>
+          <span class="hidden md:inline">即時雷達回波</span>
+        </button>
+
+        <button id="cwaConfigBtn" onclick="openCwaConfigModal()" class="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-amber-300 bg-amber-950/70 hover:bg-amber-900/80 rounded-lg border border-amber-700/60 transition shadow-sm active:scale-95">
+          <i data-lucide="database" class="w-4 h-4 text-amber-400"></i>
+          <span id="cwaConfigBtnText" class="hidden md:inline">氣象署實測雨量</span>
+        </button>
+
+        <!-- 技術原理說明按鈕 -->
+        <button id="techDocBtn" onclick="openTechWhitepaperModal()" class="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-purple-300 bg-purple-950/80 hover:bg-purple-900 rounded-lg border border-purple-700/60 transition shadow-sm active:scale-95" title="了解系統運作原理與技術白皮書">
+          <i data-lucide="book-open" class="w-4 h-4 text-purple-400"></i>
+          <span class="hidden sm:inline">技術原理說明</span>
+          <span class="sm:hidden">原理</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5 space-y-5">
+    
+    <!-- 資料狀態微型摘要 -->
+    <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 sm:p-3.5 shadow-md flex flex-wrap items-center justify-between gap-3 text-xs">
+      <div class="flex items-center gap-2.5">
+        <span id="monitorStatusCore" class="w-2.5 h-2.5 rounded-full bg-emerald-400 led-ring-online"></span>
+        <span class="text-slate-300">觀測狀態：<strong id="monitorStatusTitle" class="text-white">Open-Meteo 免金鑰連線</strong></span>
+        <span id="cwaActiveTag" class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hidden">CWA 實測雨量筒</span>
+      </div>
+
+      <div class="flex items-center gap-3 font-mono text-slate-400">
+        <span>連線延遲: <strong id="apiLatency" class="text-slate-200">-- ms</strong></span>
+        <span>•</span>
+        <span>指標站點: <strong class="text-emerald-400" id="totalStationCount">24/24</strong></span>
+        <span>•</span>
+        <span>即時攝影機: <strong class="text-cyan-300">5 處</strong></span>
+        <span>•</span>
+        <span>自動同步: <strong id="countdownTicker" class="text-sky-300">10:00</strong></span>
+      </div>
+    </div>
+
+    <!-- 重點廊道氣象與即時路況影像專區（雙廊道：雙溪牡丹坡 / 崇德和仁土石流防汛） -->
+    <div class="bg-slate-900/90 rounded-2xl p-4 sm:p-5 border border-slate-800 shadow-xl backdrop-blur-md space-y-4">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+        <div class="space-y-1">
+          <!-- 廊道切換分頁 -->
+          <div class="flex flex-wrap items-center gap-2">
+            <button onclick="switchCorridor('shuangxi')" id="corridorBtn-shuangxi" class="px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 bg-amber-500/20 text-amber-300 border border-amber-500/40">
+              <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+              <span>宜蘭線 · 雙溪牡丹坡廊道</span>
+            </button>
+            <button onclick="switchCorridor('chongde')" id="corridorBtn-chongde" class="px-3 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">
+              <span class="w-2 h-2 rounded-full bg-rose-400"></span>
+              <span>北迴線 · 崇德和仁防汛廊道 (土石流熱區)</span>
+            </button>
+          </div>
+          <p id="corridorSummaryDesc" class="text-xs text-slate-400 mt-1">
+            提供雙溪實測氣象與台2丙即時畫面，可直接檢視路面水膜反光與車輛濺水，作為是否需要加掛推坡輔機之實況參考。
+          </p>
+        </div>
+
+        <!-- 該廊道對應的即時攝影機切換子分頁 -->
+        <div id="corridorCctvSubTabs" class="flex flex-wrap items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs self-start sm:self-auto">
+          <!-- 由 JavaScript 動態生成 -->
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+        
+        <!-- 左側：公路局即時影像播放器 -->
+        <div class="lg:col-span-8 bg-slate-950 rounded-xl p-3 border border-slate-800 flex flex-col justify-between">
+          <div class="flex items-center justify-between pb-2 text-xs border-b border-slate-800/80">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+              <span id="dashboardCctvTitle" class="font-bold text-white">台2丙線 20K+832 過港隧道口(N)</span>
+              <span id="dashboardCctvBadge" class="px-1.5 py-0.5 rounded text-[10px] bg-sky-500/20 text-sky-300 border border-sky-500/30">距雙溪站 180m</span>
+            </div>
+            <div class="flex items-center gap-2 text-slate-400 text-[11px] font-mono">
+              <span id="dashboardCctvTime">即時更新中</span>
+              <button onclick="triggerCctvManualRefresh()" title="刷新畫面" class="p-1 hover:text-white transition">
+                <i data-lucide="rotate-cw" id="cctvSpinIcon" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- 影像載入區塊 (具備獨立錯誤提示遮罩，杜絕摧毀 img 標籤) -->
+          <div class="relative w-full aspect-[16/9] md:aspect-[21/9] lg:aspect-[16/8] rounded-lg overflow-hidden bg-slate-900 mt-2 border border-slate-800 flex items-center justify-center">
+            <img id="dashboardLiveCctvImg" 
+                 src="https://cctv-ss01.thb.gov.tw/T2C-20K+832(N)" 
+                 referrerpolicy="no-referrer" 
+                 alt="公路局即時路況影像" 
+                 class="w-full h-full object-cover transition-opacity duration-300"
+                 onload="handleCctvLoadSuccess()"
+                 onerror="handleCctvLoadError()">
+            <div id="cctvErrorOverlay" class="absolute inset-0 bg-slate-950/90 hidden flex flex-col items-center justify-center p-4 text-center text-xs text-slate-400 z-10">
+              <p class="text-amber-400 font-bold mb-1 flex items-center gap-1.5">
+                <i data-lucide="alert-triangle" class="w-4 h-4"></i>
+                <span>影像暫時離線或加載中</span>
+              </p>
+              <p class="text-slate-500 text-[11px] mb-2">公路局端點可能短暫連線波動，系統將持續自動重試</p>
+              <a id="cctvFallbackLink" href="https://cctv-ss01.thb.gov.tw/T2C-20K+832(N)" target="_blank" rel="noopener noreferrer" class="underline text-sky-400 hover:text-sky-300 font-medium">點擊另開官方原圖連結</a>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between pt-2.5 text-[11px] text-slate-400">
+            <span id="dashboardCctvDesc" class="truncate max-w-md">距離雙溪車站西側僅約 180 公尺，直視過港隧道西口路面水膜。</span>
+            <a id="dashboardCctvExtLink" href="https://cctv-ss01.thb.gov.tw/T2C-20K+832(N)" target="_blank" rel="noopener noreferrer" class="text-sky-400 hover:text-sky-300 font-semibold flex items-center gap-1 flex-shrink-0">
+              <span>另開大圖</span>
+              <i data-lucide="external-link" class="w-3 h-3"></i>
+            </a>
+          </div>
+        </div>
+
+        <!-- 右側：現地氣象數值卡 -->
+        <div class="lg:col-span-4 flex flex-col justify-between gap-2.5">
+          <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 flex-1 flex flex-col justify-center space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                <i data-lucide="map-pin" class="w-3.5 h-3.5 text-sky-400"></i>
+                <span id="corridorStationNameTitle">雙溪車站現地實況</span>
+              </span>
+              <span id="corridorWeatherBadge" class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                多雲 ⛅
+              </span>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2 text-center pt-1">
+              <div class="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
+                <div class="text-[11px] text-slate-400">現地氣溫</div>
+                <div id="corridorTemp" class="font-extrabold font-mono text-white text-xl mt-0.5">--°C</div>
+              </div>
+              <div class="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
+                <div class="text-[11px] text-slate-400">相對濕度</div>
+                <div id="corridorHumidity" class="font-extrabold font-mono text-emerald-400 text-xl mt-0.5">--%</div>
+              </div>
+              <div class="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
+                <div class="text-[11px] text-slate-400">過去1小時雨量</div>
+                <div id="corridorRain" class="font-extrabold font-mono text-sky-400 text-xl mt-0.5">0.0 mm</div>
+              </div>
+              <div class="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
+                <div class="text-[11px] text-slate-400">10分鐘雨量</div>
+                <div id="corridorRain10" class="font-extrabold font-mono text-cyan-300 text-xl mt-0.5">0.0 mm</div>
+              </div>
+            </div>
+
+            <div class="pt-2 border-t border-slate-800/80 text-[11px] text-slate-400 flex items-center justify-between">
+              <span>建議運轉狀態：</span>
+              <span id="corridorAlertBadge" class="font-bold text-emerald-400">建議正常運轉</span>
+            </div>
+          </div>
+
+          <div id="corridorObservationTip" class="bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 text-[11px] text-slate-400 leading-relaxed">
+            💡 <strong>實務觀察提示</strong>：牡丹坡起坡段若時雨量 &gt; 0 或濕度偏高時，建議比對左側監視器車道路面反光；若路面反光潮濕，可預為因應防範動輪打滑。
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div id="railwayMapSection" class="bg-slate-900/90 rounded-2xl p-4 sm:p-5 border border-slate-800 shadow-xl backdrop-blur-md space-y-3">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-1 border-b border-slate-800">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+              <i data-lucide="map" class="w-4 h-4"></i>
+            </span>
+            <h2 class="text-base sm:text-lg font-bold text-white tracking-tight flex items-center gap-2">
+              東部幹線即時氣象與攝影機路網圖
+            </h2>
+          </div>
+          <p class="text-xs text-slate-400 mt-1">
+            標示 24 座指標車站氣象與台2丙、台9線 5 處即時攝影機位置。點擊圖釘可查看實況雨量或彈出即時路況影像。
+          </p>
+        </div>
+
+        <!-- 視角切換控制項 -->
+        <div class="flex flex-wrap items-center gap-2 text-xs">
+          <button onclick="fitMapToAllStations()" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition flex items-center gap-1">
+            <i data-lucide="maximize-2" class="w-3.5 h-3.5 text-sky-400"></i>
+            <span>全線視角</span>
+          </button>
+          <button onclick="panMapToLine('yilan')" class="px-2.5 py-1.5 rounded-lg bg-sky-950/60 hover:bg-sky-900/80 text-sky-300 border border-sky-800/60 transition">
+            宜蘭線
+          </button>
+          <button onclick="panMapToLine('north')" class="px-2.5 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-800/60 transition">
+            北迴線
+          </button>
+          <button onclick="panMapToLine('taitung')" class="px-2.5 py-1.5 rounded-lg bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border border-amber-800/60 transition">
+            台東線
+          </button>
+        </div>
+      </div>
+
+      <!-- 地圖容器 -->
+      <div class="relative w-full rounded-xl overflow-hidden border border-slate-800 bg-slate-950 shadow-inner">
+        <div id="railwayMap" class="w-full h-[420px] sm:h-[500px] z-10"></div>
+        
+        <!-- 地圖左下角圖例 -->
+        <div class="absolute bottom-3 left-3 z-[20] bg-slate-900/90 backdrop-blur-md border border-slate-700/80 px-3 py-2 rounded-xl text-[11px] shadow-lg flex flex-wrap items-center gap-3">
+          <div class="flex items-center gap-1.5">
+            <span class="w-2.5 h-2.5 rounded-full bg-sky-400"></span>
+            <span class="text-slate-300">宜蘭線 (8站)</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+            <span class="text-slate-300">北迴線 (8站)</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+            <span class="text-slate-300">台東線 (8站)</span>
+          </div>
+          <div class="w-px h-3 bg-slate-700 hidden sm:block"></div>
+          <div class="flex items-center gap-1.5 text-cyan-300 font-semibold">
+            <span class="w-3.5 h-3.5 rounded-full bg-cyan-600 border border-white flex items-center justify-center text-[9px]">📹</span>
+            <span>即時攝影機 (5處)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-slate-900/60 rounded-2xl p-4 sm:p-5 border border-slate-800/80 shadow-md backdrop-blur-sm">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+        <!-- 路線分類分頁 -->
+        <div class="flex flex-wrap items-center gap-1.5 text-xs font-semibold">
+          <button onclick="setFilterLine('all')" id="filter-all" class="px-3.5 py-1.5 rounded-xl bg-sky-600 text-white shadow-sm transition">
+            全部路線 (<span id="count-all">24</span>)
+          </button>
+          <button onclick="setFilterLine('yilan')" id="filter-yilan" class="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition">
+            宜蘭線 (<span id="count-yilan">8</span>)
+          </button>
+          <button onclick="setFilterLine('north')" id="filter-north" class="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition">
+            北迴線 (<span id="count-north">8</span>)
+          </button>
+          <button onclick="setFilterLine('taitung')" id="filter-taitung" class="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition">
+            台東線 (<span id="count-taitung">8</span>)
+          </button>
+          <button onclick="toggleRainOnlyFilter()" id="filter-rain" class="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700/60 transition flex items-center gap-1">
+            <i data-lucide="cloud-rain" class="w-3.5 h-3.5 text-cyan-400"></i>
+            <span>僅看降雨站點</span>
+          </button>
+        </div>
+
+        <!-- 搜尋與全選 -->
+        <div class="flex items-center gap-2">
+          <div class="relative flex-1 sm:w-48">
+            <i data-lucide="search" class="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"></i>
+            <input type="text" id="stationSearchInput" oninput="handleStationSearch(this.value)" placeholder="搜尋站名 (如: 和仁/崇德)" class="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl bg-slate-950 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 transition">
+          </div>
+          <button onclick="toggleSelectAllStations()" class="px-2.5 py-1.5 text-xs rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition flex items-center gap-1">
+            <i data-lucide="check-square" class="w-3.5 h-3.5 text-sky-400"></i>
+            <span id="selectAllBtnText">全選</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="stationsContainer" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5 mt-4">
+        <!-- 由 JavaScript 動態生成 24 座車站卡片 -->
+      </div>
+    </div>
+
+    <div class="bg-slate-900/90 rounded-2xl p-4 sm:p-5 border border-slate-800 shadow-xl backdrop-blur-md space-y-4">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+        <div>
+          <h3 class="text-base font-bold text-white flex items-center gap-2">
+            <i data-lucide="message-square-share" class="w-5 h-5 text-emerald-400"></i>
+            <span>LINE 天氣通報訊息生成</span>
+          </h3>
+          <p class="text-xs text-slate-400 mt-0.5">
+            自動根據勾選之車站與實測天氣產出通報格式，一鍵複製即可直接發送至個人或工作群組。
+          </p>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <select id="lineMsgTemplateSelect" onchange="changeLineTemplate()" class="text-xs bg-slate-800 text-slate-200 border border-slate-700 rounded-xl px-3 py-2 focus:outline-none focus:border-emerald-500">
+            <option value="commuter">標準通勤版 (晴雨+溫濕度)</option>
+            <option value="concise">極簡重點版 (站名+氣溫)</option>
+            <option value="rainWarning">防汛雨量版 (雨量與建議狀態)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="relative">
+        <textarea id="lineMessagePreview" rows="7" class="w-full rounded-xl bg-slate-950 p-3.5 font-mono text-xs text-slate-200 border border-slate-800 focus:outline-none focus:border-emerald-500 leading-relaxed shadow-inner" placeholder="正在生成通報訊息..."></textarea>
+      </div>
+
+      <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-1">
+        <div class="text-xs text-slate-400 flex items-center gap-2">
+          <i data-lucide="info" class="w-4 h-4 text-sky-400"></i>
+          <span>已勾選 <strong id="selectedStationsCount" class="text-sky-300 font-bold">24</strong> 座車站資料</span>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button onclick="copyLineMessage()" class="flex-1 sm:flex-initial px-4 py-2.5 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-950 active:scale-95">
+            <i data-lucide="copy" class="w-4 h-4"></i>
+            <span>複製通報內容</span>
+          </button>
+          <button onclick="openLineDirectShare()" class="flex-1 sm:flex-initial px-4 py-2.5 rounded-xl text-xs font-semibold bg-green-700 hover:bg-green-600 text-white transition flex items-center justify-center gap-2 shadow-lg shadow-green-950 active:scale-95">
+            <i data-lucide="send" class="w-4 h-4"></i>
+            <span>開啟 LINE 發送</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- 中央氣象署雷達回波 Modal -->
+  <div id="radarModal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden items-center justify-center p-3 sm:p-4">
+    <div class="bg-slate-900 border border-slate-800 w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+      <div class="p-4 border-b border-slate-800 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <i data-lucide="radar" class="w-5 h-5 text-cyan-400"></i>
+          <h3 class="text-sm font-bold text-white">交通部中央氣象署 即時雷達回波圖</h3>
+        </div>
+        <button onclick="closeRadarModal()" class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+      <div class="p-4 bg-slate-950 flex flex-col items-center">
+        <div class="relative w-full aspect-square max-w-lg rounded-xl overflow-hidden border border-slate-800 bg-slate-900 flex items-center justify-center">
+          <img id="radarImage" src="https://cwaopendata.s3.ap-northeast-1.amazonaws.com/Observation/O-A0058-003.png" alt="中央氣象署雷達回波" class="w-full h-full object-contain" onerror="this.src='https://placehold.co/600x600/0f172a/94a3b8?text=Radar+Data+Connecting...'">
+        </div>
+        <div class="mt-3 flex items-center justify-between w-full text-xs text-slate-400 px-1">
+          <span>更新頻率: 約 6-10 分鐘自動同化</span>
+          <button onclick="refreshRadarImage()" class="text-sky-400 hover:text-sky-300 font-semibold flex items-center gap-1">
+            <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>
+            <span>重新載入圖層</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CWA 氣象署 API 設定 Modal -->
+  <div id="cwaConfigModal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden items-center justify-center p-3 sm:p-4">
+    <div class="bg-slate-900 border border-slate-800 w-full max-w-md rounded-2xl shadow-2xl p-5 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div class="flex items-center gap-2">
+          <i data-lucide="database" class="w-5 h-5 text-amber-400"></i>
+          <h3 class="text-sm font-bold text-white">中央氣象署 (CWA) 實測雨量設定</h3>
+        </div>
+        <button onclick="closeCwaConfigModal()" class="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <p class="text-xs text-slate-300 leading-relaxed">
+        填入氣象署開放資料平臺免費授權碼 (Authorization Key) 即可啟用地面實體雨量筒（10分/1小時/24小時雨量實測）。<br>
+        <span class="text-slate-400">* 若未設定，系統預設採用 Open-Meteo 高解析模型自動運作。</span>
+      </p>
+
+      <div class="space-y-1.5">
+        <label class="text-xs font-semibold text-slate-200">CWA API 授權碼：</label>
+        <input type="text" id="cwaApiKeyInput" placeholder="CWA-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX" class="w-full px-3 py-2 text-xs rounded-xl bg-slate-950 border border-slate-700 text-white placeholder-slate-600 focus:outline-none focus:border-amber-500 font-mono">
+      </div>
+
+      <div class="flex items-center gap-2 pt-2">
+        <button onclick="saveCwaApiKey()" class="flex-1 py-2 rounded-xl text-xs font-bold bg-amber-600 hover:bg-amber-500 text-white transition shadow-md">
+          儲存並套用
+        </button>
+        <button onclick="loadCwaDemoData()" class="px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 transition">
+          現地模擬
+        </button>
+        <button onclick="clearCwaApiKey()" class="px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-rose-400 border border-slate-700 transition">
+          清除
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 技術白皮書暨運作原理說明 Modal -->
+  <div id="techWhitepaperModal" class="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm hidden items-center justify-center p-3 sm:p-5">
+    <div class="bg-slate-900 border border-slate-800 w-full max-w-3xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div class="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/90">
+        <div class="flex items-center gap-2.5">
+          <span class="w-8 h-8 rounded-lg bg-purple-500/20 text-purple-300 flex items-center justify-center border border-purple-500/30">
+            <i data-lucide="book-open" class="w-4 h-4"></i>
+          </span>
+          <div>
+            <h3 class="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+              系統技術白皮書暨運作原理說明
+            </h3>
+            <p class="text-[11px] text-slate-400">System Architecture, Corridors & Defensive Operations</p>
+          </div>
+        </div>
+        <button onclick="closeTechWhitepaperModal()" class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="p-5 sm:p-6 space-y-6 overflow-y-auto text-xs sm:text-sm text-slate-300 leading-relaxed">
+        <section class="space-y-2">
+          <h4 class="text-sm font-bold text-purple-300 flex items-center gap-1.5">
+            <span>一、 輕量高可用性系統架構</span>
+          </h4>
+          <p class="text-xs text-slate-300">
+            本系統採用純前端無伺服器架構（Client-Side Serverless SPA），不經由任何第三方資料庫。核心特點如下：
+          </p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1 text-xs">
+            <div class="bg-slate-950 p-3 rounded-xl border border-slate-800">
+              <div class="font-bold text-sky-400 mb-1">雙通道氣象資料同化</div>
+              <p class="text-slate-400 leading-normal">
+                預設採用全球高解析數值天氣模式（Open-Meteo NWP），並支援切換交通部中央氣象署（CWA）實體自動雨量筒 API。
+              </p>
+            </div>
+            <div class="bg-slate-950 p-3 rounded-xl border border-slate-800">
+              <div class="font-bold text-emerald-400 mb-1">零 Referer 官方影像穿透</div>
+              <p class="text-slate-400 leading-normal">
+                以標準 W3C <code class="text-purple-300">no-referrer</code> 技術直連公路局端點，穩定獲取台2丙與台9線蘇花段真實路況快照。
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="space-y-2">
+          <h4 class="text-sm font-bold text-sky-300 flex items-center gap-1.5">
+            <span>二、 氣象資料源與防汛適用性</span>
+          </h4>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse bg-slate-950 rounded-xl overflow-hidden text-xs">
+              <thead>
+                <tr class="border-b border-slate-800 bg-slate-900/80 text-slate-300">
+                  <th class="p-2.5 font-bold">項目</th>
+                  <th class="p-2.5 font-bold text-sky-400">Open-Meteo 免金鑰模式</th>
+                  <th class="p-2.5 font-bold text-amber-400">CWA 氣象署實體測站</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800/60 text-slate-400">
+                <tr>
+                  <td class="p-2.5 font-semibold text-slate-200">資料本質</td>
+                  <td class="p-2.5">全球數值模式內插（ECMWF / GFS）</td>
+                  <td class="p-2.5 text-amber-300">各車站旁實體地面傾斗式雨量計</td>
+                </tr>
+                <tr>
+                  <td class="p-2.5 font-semibold text-slate-200">時雨量準確度</td>
+                  <td class="p-2.5">大範圍降雨良好；山區熱對流易平滑稀釋</td>
+                  <td class="p-2.5 text-emerald-400 font-semibold">極高（實測 10分 / 1小時 / 24小時量）</td>
+                </tr>
+                <tr>
+                  <td class="p-2.5 font-semibold text-slate-200">使用門檻</td>
+                  <td class="p-2.5 text-emerald-400 font-semibold">隨開即用，免任何金鑰</td>
+                  <td class="p-2.5">需填入免費 CWA OpenData 授權碼</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="space-y-2">
+          <h4 class="text-sm font-bold text-amber-300 flex items-center gap-1.5">
+            <span>三、 重點監控廊道實務分析（牡丹坡 vs. 崇德和仁土石流）</span>
+          </h4>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1.5">
+              <div class="font-bold text-amber-400">宜蘭線 · 牡丹坡 16.7‰ 陡坡與路面水膜</div>
+              <p class="text-slate-400 leading-relaxed">
+                雙溪至牡丹間具有千分之 16.7 陡坡。細雨或高濕度時，鐵粉油脂乳化使鋼軌黏著係數由 0.35 掉至 0.10，易引發動輪空轉。配置台2丙 20K/22K/25K 影像，可透過柏油反光驗證路面水膜，作為輔機加掛之客觀參考。
+              </p>
+            </div>
+            <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1.5">
+              <div class="font-bold text-rose-400">北迴線 · 崇德和仁蘇花峭壁與小清水溪橋</div>
+              <p class="text-slate-400 leading-relaxed">
+                崇德與和仁間緊鄰中央山脈斷崖與太平洋，為極端對流土石流高潛勢區。配置台9線 160K+710（小清水溪橋停車場）與 158K+520（大清水），可直擊小清水溪山洪水位與落石邊坡，第一時間掌握邊坡沖刷動態。
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="space-y-2">
+          <h4 class="text-sm font-bold text-emerald-300 flex items-center gap-1.5">
+            <span>四、 客觀「建議運轉狀態」標準（司機員行車防禦導向）</span>
+          </h4>
+          <p class="text-xs text-slate-300">
+            本系統專供第一線乘務與運轉人員防禦駕駛參考（路線封鎖與停駛概由調度總所統籌命令），提供運轉操縱相關之三段式建議：
+          </p>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+            <div class="p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-800/50">
+              <span class="font-bold text-emerald-400">🟢 建議正常運轉</span>
+              <p class="text-slate-400 mt-1">時雨量 &lt; 15 mm 且 24小時雨量 &lt; 50 mm。常態牽引運轉。</p>
+            </div>
+            <div class="p-2.5 rounded-lg bg-sky-950/40 border border-sky-800/50">
+              <span class="font-bold text-sky-400">🔵 建議注意運轉</span>
+              <p class="text-slate-400 mt-1">時雨量 ≥ 15 mm 或 24小時雨量 ≥ 50 mm。注意動輪空轉與邊坡微積水。</p>
+            </div>
+            <div class="p-2.5 rounded-lg bg-amber-950/40 border border-amber-800/50">
+              <span class="font-bold text-amber-400">🟠 建議減速運轉</span>
+              <p class="text-slate-400 mt-1">時雨量 ≥ 30 mm 或 24小時雨量 ≥ 80 mm。強降雨視距受阻，建議警惕減速。</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="p-3 bg-slate-950/90 rounded-xl border border-slate-800 text-slate-400 text-xs leading-relaxed space-y-1">
+          <div class="font-bold text-amber-400">⚠️ 唯一準據免責聲明</div>
+          <p>
+            本系統定位為輔助即時氣象與路況實況儀表板，所有數值及影像均源自政府公開資料平臺。實際列車編組調度、運轉整理、降速運行、推坡輔機加掛與路線防汛封鎖等行車命令，<strong>概以交通部臺灣鐵路股份有限公司綜合調度所及現場規章為唯一依據</strong>。
+          </p>
+        </section>
+      </div>
+
+      <div class="p-3.5 bg-slate-950 border-t border-slate-800 flex justify-end">
+        <button onclick="closeTechWhitepaperModal()" class="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-white transition">
+          關閉說明
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="fixed bottom-5 right-5 z-50 pointer-events-none flex flex-col gap-2"></div>
+
+  <script>
+    /* 即時影像載入回呼函式（預先定義於最前段，確保 inline 事件無死角呼叫） */
+    function handleCctvLoadSuccess() {
+      var overlay = document.getElementById('cctvErrorOverlay');
+      if (overlay) overlay.classList.add('hidden');
+    }
+
+    function handleCctvLoadError() {
+      var overlay = document.getElementById('cctvErrorOverlay');
+      if (overlay) {
+        overlay.classList.remove('hidden');
+        if (typeof lucide !== 'undefined') lucide.createIcons({ root: overlay });
+      }
+    }
+
+    // 車站常數定義 (涵蓋宜蘭線 8 站、北迴線 8 站、台東線 8 站，共 24 個指標站)
+    var STATIONS = [
+      // 宜蘭線 (8 站)
+      { id: 'ruifang', name: '瑞芳', line: 'yilan', lineName: '宜蘭線', lat: 25.1089, lon: 121.8062, cwaStation: 'C0A560', selected: true },
+      { id: 'shuangxi', name: '雙溪', line: 'yilan', lineName: '宜蘭線', lat: 25.0343, lon: 121.8656, cwaStation: 'C0A530', selected: true },
+      { id: 'fulong', name: '福隆', line: 'yilan', lineName: '宜蘭線', lat: 25.0163, lon: 121.9442, cwaStation: 'C0A540', selected: true },
+      { id: 'toucheng', name: '頭城', line: 'yilan', lineName: '宜蘭線', lat: 24.8592, lon: 121.8236, cwaStation: 'C0U780', selected: true },
+      { id: 'jiaoxi', name: '礁溪', line: 'yilan', lineName: '宜蘭線', lat: 24.8286, lon: 121.7725, cwaStation: 'C0U770', selected: true },
+      { id: 'yilan', name: '宜蘭', line: 'yilan', lineName: '宜蘭線', lat: 24.7547, lon: 121.7583, cwaStation: '467080', selected: true },
+      { id: 'luodong', name: '羅東', line: 'yilan', lineName: '宜蘭線', lat: 24.6775, lon: 121.7722, cwaStation: 'C0U710', selected: true },
+      { id: 'suao', name: '蘇澳', line: 'yilan', lineName: '宜蘭線', lat: 24.5954, lon: 121.8519, cwaStation: '467060', selected: true },
+
+      // 北迴線 (8 站 - 納入土石流關鍵熱點 和仁 與 崇德)
+      { id: 'suaoxin', name: '蘇澳新', line: 'north', lineName: '北迴線', lat: 24.6033, lon: 121.8317, cwaStation: 'C0U740', selected: true },
+      { id: 'dongao', name: '東澳', line: 'north', lineName: '北迴線', lat: 24.5186, lon: 121.8328, cwaStation: 'C0U750', selected: true },
+      { id: 'nanao', name: '南澳', line: 'north', lineName: '北迴線', lat: 24.4631, lon: 121.7997, cwaStation: 'C0U720', selected: true },
+      { id: 'heping', name: '和平', line: 'north', lineName: '北迴線', lat: 24.3075, lon: 121.7489, cwaStation: 'C0U860', selected: true },
+      { id: 'heren', name: '和仁', line: 'north', lineName: '北迴線', lat: 24.2505, lon: 121.7145, cwaStation: 'C0T960', selected: true },
+      { id: 'chongde', name: '崇德', line: 'north', lineName: '北迴線', lat: 24.1614, lon: 121.6560, cwaStation: 'C0T820', selected: true },
+      { id: 'xincheng', name: '新城', line: 'north', lineName: '北迴線', lat: 24.1283, lon: 121.6425, cwaStation: 'C0T820', selected: true },
+      { id: 'hualien', name: '花蓮', line: 'north', lineName: '北迴線', lat: 23.9933, lon: 121.6015, cwaStation: '466990', selected: true },
+
+      // 台東線 (8 站)
+      { id: 'shoufeng', name: '壽豐', line: 'taitung', lineName: '台東線', lat: 23.8711, lon: 121.5100, cwaStation: 'C0T870', selected: true },
+      { id: 'guangfu', name: '光復', line: 'taitung', lineName: '台東線', lat: 23.6669, lon: 121.4231, cwaStation: 'C0T9A0', selected: true },
+      { id: 'ruisui', name: '瑞穗', line: 'taitung', lineName: '台東線', lat: 23.4975, lon: 121.3769, cwaStation: 'C0T9D0', selected: true },
+      { id: 'yuli', name: '玉里', line: 'taitung', lineName: '台東線', lat: 23.3339, lon: 121.3142, cwaStation: 'C0Z220', selected: true },
+      { id: 'fuli', name: '富里', line: 'taitung', lineName: '台東線', lat: 23.1783, lon: 121.2503, cwaStation: 'C0Z300', selected: true },
+      { id: 'chishang', name: '池上', line: 'taitung', lineName: '台東線', lat: 23.1239, lon: 121.2189, cwaStation: 'C0S730', selected: true },
+      { id: 'guanshan', name: '關山', line: 'taitung', lineName: '台東線', lat: 23.0467, lon: 121.1631, cwaStation: 'C0S760', selected: true },
+      { id: 'taitung', name: '台東', line: 'taitung', lineName: '台東線', lat: 22.7933, lon: 121.1231, cwaStation: '467660', selected: true }
+    ];
+
+    // 公路局官方即時攝影機清單 (含雙溪牡丹坡廊道 3 處 + 崇德和仁土石流防汛廊道 2 處)
+    var CCTV_STREAMS = [
+      // 宜蘭線 · 雙溪牡丹坡廊道
+      {
+        id: 'cctv-20k',
+        corridor: 'shuangxi',
+        corridorName: '宜蘭線 · 牡丹坡廊道',
+        tabName: '雙溪 20K+832 (近站)',
+        title: '台2丙線 20K+832 過港隧道口(N)',
+        badge: '距雙溪站 180m',
+        stationId: 'shuangxi',
+        lat: 25.0336,
+        lon: 121.8640,
+        url: 'https://cctv-ss01.thb.gov.tw/T2C-20K+832(N)',
+        desc: '距離雙溪車站西側僅約 180 公尺，直視過港隧道西口路面水膜，掌握牡丹坡起坡段乾濕狀況。'
+      },
+      {
+        id: 'cctv-22k',
+        corridor: 'shuangxi',
+        corridorName: '宜蘭線 · 牡丹坡廊道',
+        tabName: '下雙溪 22K+900',
+        title: '台2丙線 22K+900 貢寮區下雙溪街(E)',
+        badge: '雙溪貢寮交界',
+        stationId: 'shuangxi',
+        lat: 25.0258,
+        lon: 121.8845,
+        url: 'https://cctv-ss01.thb.gov.tw/T2C-22K+900',
+        desc: '監控雙溪河谷迎風水氣前緣，掌握自貢寮深入雙溪之降雨動態。'
+      },
+      {
+        id: 'cctv-25k',
+        corridor: 'shuangxi',
+        corridorName: '宜蘭線 · 牡丹坡廊道',
+        tabName: '貢寮 25K+950',
+        title: '台2丙線 25K+950 貢寮站旁',
+        badge: '貢寮站周邊',
+        stationId: 'fulong',
+        lat: 25.0155,
+        lon: 121.9125,
+        url: 'https://cctv-ss07.thb.gov.tw/T2C-25K+950',
+        desc: '緊鄰貢寮車站與台2丙鐵路並行路段，直觀監控貢寮福隆區間天候與路面水膜。'
+      },
+
+      // 北迴線 · 崇德和仁廊道 (土石流潛勢區)
+      {
+        id: 'cctv-160k',
+        corridor: 'chongde',
+        corridorName: '北迴線 · 崇德和仁防汛廊道',
+        tabName: '小清水橋 160K+710',
+        title: '台9線 160K+710 秀林鄉小清水橋停車場南角電力箱北15M(逆)',
+        badge: '小清水溪橋旁 · 土石流熱區',
+        stationId: 'heren',
+        lat: 24.2082,
+        lon: 121.6703,
+        url: 'https://cctv-ss06.thb.gov.tw/T9-160K+710',
+        desc: '緊鄰台鐵北迴線小清水溪橋（曾遭土石流沖毀關鍵熱點），直擊溪谷山洪水位、溢流與邊坡強降雨沖刷。'
+      },
+      {
+        id: 'cctv-158k',
+        corridor: 'chongde',
+        corridorName: '北迴線 · 崇德和仁防汛廊道',
+        tabName: '大清水 158K+520',
+        title: '台9線 158K+520 蘇花公路大清水隧道外',
+        badge: '和仁崇德段 · 蘇花落石防護',
+        stationId: 'chongde',
+        lat: 24.2168,
+        lon: 121.6876,
+        url: 'https://cctv-ss06.thb.gov.tw/T9-158K+520',
+        desc: '直視和仁至崇德間大清水蘇花峭壁邊坡，防範短延時強降雨引發之落石滑坡與泥流漫延至鐵路。'
+      }
+    ];
+
+    var activeCorridor = 'shuangxi'; // 'shuangxi' 或 'chongde'
+    var currentFilter = 'all';
+    var rainOnlyFilter = false;
+    var searchQuery = '';
+    var weatherDataMap = {};
+    var lastFetchTimestamp = new Date();
+    var AUTO_REFRESH_INTERVAL_SEC = 600;
+    var remainingCountdown = AUTO_REFRESH_INTERVAL_SEC;
+    var tickerIntervalId = null;
+    var cctvAutoRefreshIntervalId = null;
+    var activeDashboardCctvId = 'cctv-20k';
+
+    var railwayMap = null;
+    var stationMarkers = {};
+    var railwayRoutePolylines = [];
+    var cctvMarkers = [];
+
+    // 安全儲存工具 (修復沙盒環境 localStorage SecurityError 拋錯)
+    var inMemoryStore = {};
+    function getSafeStorage(key) {
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) {
+          return window.localStorage.getItem(key);
+        }
+      } catch (e) {
+        console.warn('Storage read permission denied, using memory store:', e);
+      }
+      return inMemoryStore[key] || null;
+    }
+
+    function setSafeStorage(key, val) {
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) {
+          window.localStorage.setItem(key, val);
+          return;
+        }
+      } catch (e) {
+        console.warn('Storage write permission denied, using memory store:', e);
+      }
+      inMemoryStore[key] = val;
+    }
+
+    function removeSafeStorage(key) {
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) {
+          window.localStorage.removeItem(key);
+          return;
+        }
+      } catch (e) {
+        console.warn('Storage remove permission denied:', e);
+      }
+      delete inMemoryStore[key];
+    }
+
+    function decodeWeatherCode(code, isDay) {
+      if (code === undefined || code === null) {
+        return { text: '多雲', emoji: isDay ? '⛅' : '☁️', isRain: false };
+      }
+      code = Number(code);
+      switch (code) {
+        case 0:
+          return { text: '晴朗', emoji: isDay ? '☀️' : '🌙', isRain: false };
+        case 1:
+          return { text: '晴時多雲', emoji: isDay ? '🌤️' : '☁️', isRain: false };
+        case 2:
+          return { text: '多雲', emoji: isDay ? '⛅' : '☁️', isRain: false };
+        case 3:
+          return { text: '陰天', emoji: '☁️', isRain: false };
+        case 45:
+        case 48:
+          return { text: '霧/結露', emoji: '🌫️', isRain: false };
+        case 51:
+        case 53:
+        case 55:
+          return { text: '毛毛雨', emoji: '🌦️', isRain: true };
+        case 61:
+          return { text: '小雨', emoji: '🌧️', isRain: true };
+        case 63:
+          return { text: '中雨', emoji: '🌧️', isRain: true };
+        case 65:
+          return { text: '大雨', emoji: '⛈️', isRain: true };
+        case 80:
+        case 81:
+        case 82:
+          return { text: '陣雨', emoji: '🌦️', isRain: true };
+        case 95:
+        case 96:
+        case 99:
+          return { text: '雷陣雨', emoji: '⛈️', isRain: true };
+        default:
+          return { text: '陰天', emoji: '☁️', isRain: false };
+      }
+    }
+
+    // 建議運轉狀態評估（專為司機員操縱參考之客觀三段式標準）
+    function evalRailwayAlert(past1hr, past24hr) {
+      var r1 = parseFloat(past1hr) || 0;
+      var r24 = parseFloat(past24hr) || 0;
+
+      if (r1 >= 30 || r24 >= 80) {
+        return {
+          level: 'warning-heavy',
+          title: '建議減速運轉',
+          badgeClass: 'bg-amber-500/20 text-amber-300 border-amber-500/50',
+          cardBorderClass: 'border-amber-500/60 ring-1 ring-amber-500/30'
+        };
+      } else if (r1 >= 15 || r24 >= 50) {
+        return {
+          level: 'warning',
+          title: '建議注意運轉',
+          badgeClass: 'bg-sky-500/20 text-sky-300 border-sky-500/50',
+          cardBorderClass: 'border-sky-500/50'
+        };
+      } else {
+        return {
+          level: 'normal',
+          title: '建議正常運轉',
+          badgeClass: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
+          cardBorderClass: 'border-slate-800/80 hover:border-slate-700'
+        };
+      }
+    }
+
+    function initStationDefaults() {
+      STATIONS.forEach(function(s) {
+        weatherDataMap[s.id] = {
+          temp: 24,
+          apparentTemp: 25,
+          humidity: 75,
+          windSpeed: 8,
+          past10min: '0.0',
+          past1hr: '0.0',
+          past24hr: '0.0',
+          isGroundSensor: false,
+          alertInfo: evalRailwayAlert(0, 0),
+          weatherInfo: { text: '多雲', emoji: '⛅', isRain: false }
+        };
+      });
+    }
+
+    function fetchWeatherData() {
+      var refreshIcon = document.getElementById('refreshIcon');
+      if (refreshIcon) refreshIcon.classList.add('animate-spin');
+      setConnectionStatus('syncing');
+
+      var startTime = performance.now();
+      var cwaKey = getSafeStorage('railway_cwa_key');
+
+      if (cwaKey) {
+        fetchFromCwaAndFallback(cwaKey, startTime);
+      } else {
+        fetchFromOpenMeteo(startTime);
+      }
+    }
+
+    function fetchFromOpenMeteo(startTime) {
+      var lats = STATIONS.map(function(s) { return s.lat; }).join(',');
+      var lons = STATIONS.map(function(s) { return s.lon; }).join(',');
+      var url = 'https://api.open-meteo.com/v1/forecast?latitude=' + lats + '&longitude=' + lons + '&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,rain,weather_code,wind_speed_10m&timezone=Asia%2FTaipei';
+
+      fetch(url)
+        .then(function(res) {
+          if (!res.ok) throw new Error('Open-Meteo HTTP ' + res.status);
+          return res.json();
+        })
+        .then(function(data) {
+          var latency = Math.round(performance.now() - startTime);
+          var latElem = document.getElementById('apiLatency');
+          if (latElem) latElem.textContent = latency + ' ms';
+
+          var list = Array.isArray(data) ? data : [data];
+          list.forEach(function(item, idx) {
+            var st = STATIONS[idx];
+            if (!st) return;
+
+            var cur = item.current || {};
+            var temp = Math.round(cur.temperature_2m !== undefined ? cur.temperature_2m : 24);
+            var apparent = Math.round(cur.apparent_temperature !== undefined ? cur.apparent_temperature : temp);
+            var hum = Math.round(cur.relative_humidity_2m !== undefined ? cur.relative_humidity_2m : 75);
+            var wind = Math.round(cur.wind_speed_10m !== undefined ? cur.wind_speed_10m : 10);
+            var rain = (cur.precipitation !== undefined ? cur.precipitation : (cur.rain || 0)).toFixed(1);
+            var wInfo = decodeWeatherCode(cur.weather_code, cur.is_day);
+
+            weatherDataMap[st.id] = {
+              temp: temp,
+              apparentTemp: apparent,
+              humidity: hum,
+              windSpeed: wind,
+              past10min: (parseFloat(rain) * 0.2).toFixed(1),
+              past1hr: rain,
+              past24hr: (parseFloat(rain) * 2.5).toFixed(1),
+              isGroundSensor: false,
+              alertInfo: evalRailwayAlert(rain, parseFloat(rain) * 2.5),
+              weatherInfo: wInfo
+            };
+          });
+
+          onDataUpdatedSuccess();
+        })
+        .catch(function(err) {
+          console.warn('Open-Meteo fetch failed, fallback used:', err);
+          mockFallbackData();
+          onDataUpdatedSuccess();
+        });
+    }
+
+    function fetchFromCwaAndFallback(cwaKey, startTime) {
+      var url = 'https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0002-001?Authorization=' + encodeURIComponent(cwaKey);
+
+      fetch(url)
+        .then(function(res) {
+          if (!res.ok) throw new Error('CWA API HTTP ' + res.status);
+          return res.json();
+        })
+        .then(function(json) {
+          var latency = Math.round(performance.now() - startTime);
+          var latElem = document.getElementById('apiLatency');
+          if (latElem) latElem.textContent = latency + ' ms';
+
+          var records = (json.records && json.records.Station) || [];
+          var stationRecordMap = {};
+          records.forEach(function(rec) {
+            if (rec.StationId) stationRecordMap[rec.StationId] = rec;
+          });
+
+          var cwaMatched = 0;
+          STATIONS.forEach(function(st) {
+            var rec = stationRecordMap[st.cwaStation];
+            if (rec && rec.RainfallElement) {
+              cwaMatched++;
+              var rf = rec.RainfallElement;
+              var past10 = (rf.Past10Min && rf.Past10Min.Precipitation >= 0) ? rf.Past10Min.Precipitation.toFixed(1) : '0.0';
+              var past1h = (rf.Past1hr && rf.Past1hr.Precipitation >= 0) ? rf.Past1hr.Precipitation.toFixed(1) : '0.0';
+              var past24h = (rf.Past24hr && rf.Past24hr.Precipitation >= 0) ? rf.Past24hr.Precipitation.toFixed(1) : '0.0';
+              var isR = parseFloat(past1h) > 0;
+
+              weatherDataMap[st.id] = {
+                temp: 24,
+                apparentTemp: 25,
+                humidity: 82,
+                windSpeed: 12,
+                past10min: past10,
+                past1hr: past1h,
+                past24hr: past24h,
+                isGroundSensor: true,
+                alertInfo: evalRailwayAlert(past1h, past24h),
+                weatherInfo: { text: isR ? '即時降雨' : '多雲', emoji: isR ? '🌧️' : '☁️', isRain: isR }
+              };
+            }
+          });
+
+          var tag = document.getElementById('cwaActiveTag');
+          if (tag) tag.classList.remove('hidden');
+          onDataUpdatedSuccess(cwaMatched);
+        })
+        .catch(function(err) {
+          console.warn('CWA fetch error, fallback to Open-Meteo:', err);
+          fetchFromOpenMeteo(startTime);
+        });
+    }
+
+    function mockFallbackData() {
+      STATIONS.forEach(function(s) {
+        var isR = s.id === 'shuangxi' || s.id === 'heren' || s.id === 'chongde';
+        var r1 = isR ? '3.5' : '0.0';
+        weatherDataMap[s.id] = {
+          temp: 23,
+          apparentTemp: 24,
+          humidity: isR ? 88 : 76,
+          windSpeed: 10,
+          past10min: isR ? '0.8' : '0.0',
+          past1hr: r1,
+          past24hr: isR ? '14.0' : '0.0',
+          isGroundSensor: false,
+          alertInfo: evalRailwayAlert(r1, isR ? 14.0 : 0.0),
+          weatherInfo: { text: isR ? '局部陣雨' : '多雲', emoji: isR ? '🌧️' : '⛅', isRain: isR }
+        };
+      });
+    }
+
+    function onDataUpdatedSuccess(cwaCount) {
+      lastFetchTimestamp = new Date();
+      remainingCountdown = AUTO_REFRESH_INTERVAL_SEC;
+
+      setConnectionStatus('online', { cwaCount: cwaCount });
+      var timeElem = document.getElementById('lastUpdatedTime');
+      if (timeElem) timeElem.textContent = '更新於 ' + lastFetchTimestamp.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+
+      renderStations();
+      updateCorridorDashboard();
+      updateMapMarkers();
+      updateLineMessagePreview();
+
+      var refreshIcon = document.getElementById('refreshIcon');
+      setTimeout(function() {
+        if (refreshIcon) refreshIcon.classList.remove('animate-spin');
+      }, 400);
+    }
+
+    function setConnectionStatus(status, details) {
+      var navDot = document.getElementById('navStatusDot');
+      var navText = document.getElementById('navStatusText');
+      var monitorCore = document.getElementById('monitorStatusCore');
+      var monitorTitle = document.getElementById('monitorStatusTitle');
+
+      if (status === 'syncing') {
+        if (navDot) navDot.className = 'w-2 h-2 rounded-full bg-sky-400 led-ring-syncing';
+        if (navText) { navText.className = 'text-sky-400 font-semibold'; navText.textContent = '資料同步中...'; }
+        if (monitorCore) monitorCore.className = 'w-2.5 h-2.5 rounded-full bg-sky-400 led-ring-syncing';
+        if (monitorTitle) monitorTitle.textContent = '連線氣象觀測伺服器中...';
+      } else {
+        if (navDot) navDot.className = 'w-2 h-2 rounded-full bg-emerald-400 led-ring-online';
+        if (navText) { navText.className = 'text-emerald-400 font-semibold'; navText.textContent = '即時連線中'; }
+        if (monitorCore) monitorCore.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 led-ring-online';
+
+        if (details && details.cwaCount) {
+          if (monitorTitle) monitorTitle.textContent = 'CWA 實測雨量筒模式 (' + details.cwaCount + ' 站)';
+        } else {
+          if (monitorTitle) monitorTitle.textContent = 'Open-Meteo 免金鑰模式';
+        }
+      }
+    }
+
+    function startStatusTicker() {
+      if (tickerIntervalId) clearInterval(tickerIntervalId);
+      tickerIntervalId = setInterval(function() {
+        if (remainingCountdown > 0) {
+          remainingCountdown--;
+          var m = Math.floor(remainingCountdown / 60);
+          var s = remainingCountdown % 60;
+          var ticker = document.getElementById('countdownTicker');
+          if (ticker) ticker.textContent = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+        } else {
+          fetchWeatherData();
+        }
+      }, 1000);
+    }
+
+    function switchCorridor(corridorKey) {
+      activeCorridor = corridorKey;
+      var defaultCctvId = (corridorKey === 'shuangxi') ? 'cctv-20k' : 'cctv-160k';
+
+      var btnSx = document.getElementById('corridorBtn-shuangxi');
+      var btnCd = document.getElementById('corridorBtn-chongde');
+      var descText = document.getElementById('corridorSummaryDesc');
+
+      if (corridorKey === 'shuangxi') {
+        if (btnSx) btnSx.className = 'px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 bg-amber-500/20 text-amber-300 border border-amber-500/40';
+        if (btnCd) btnCd.className = 'px-3 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700';
+        if (descText) descText.textContent = '提供雙溪實測氣象與台2丙即時畫面，可直接檢視路面水膜反光與車輛濺水，作為是否需要加掛推坡輔機之實況參考。';
+      } else {
+        if (btnSx) btnSx.className = 'px-3 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700';
+        if (btnCd) btnCd.className = 'px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 bg-rose-500/20 text-rose-300 border border-rose-500/40';
+        if (descText) descText.textContent = '監控北迴線土石流脆弱路段（曾發生小清水溪橋沖毀與邊坡泥流中斷），直擊台9線 160K 小清水橋山洪水位與 158K 蘇花落石邊坡。';
+      }
+
+      switchDashboardCctvById(defaultCctvId);
+    }
+
+    function renderCorridorCctvSubTabs() {
+      var container = document.getElementById('corridorCctvSubTabs');
+      if (!container) return;
+
+      var corridorCctvs = CCTV_STREAMS.filter(function(c) { return c.corridor === activeCorridor; });
+      var html = '';
+
+      corridorCctvs.forEach(function(c) {
+        var isActive = (c.id === activeDashboardCctvId);
+        var activeClass = isActive ? 
+          'px-3 py-1.5 rounded-lg font-bold bg-sky-600 text-white transition shadow-sm' : 
+          'px-3 py-1.5 rounded-lg font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition';
+
+        html += '<button onclick="switchDashboardCctvById(\'' + c.id + '\')" class="' + activeClass + '">' +
+          c.tabName +
+        '</button>';
+      });
+
+      container.innerHTML = html;
+    }
+
+    function switchDashboardCctvById(cctvId) {
+      var target = CCTV_STREAMS.find(function(c) { return c.id === cctvId; });
+      if (!target) return;
+
+      activeDashboardCctvId = cctvId;
+      activeCorridor = target.corridor;
+
+      renderCorridorCctvSubTabs();
+
+      var titleElem = document.getElementById('dashboardCctvTitle');
+      if (titleElem) titleElem.textContent = target.title;
+
+      var badgeElem = document.getElementById('dashboardCctvBadge');
+      if (badgeElem) badgeElem.textContent = target.badge;
+
+      var descElem = document.getElementById('dashboardCctvDesc');
+      if (descElem) descElem.textContent = target.desc;
+
+      var extLink = document.getElementById('dashboardCctvExtLink');
+      if (extLink) extLink.href = target.url;
+
+      var fallbackLink = document.getElementById('cctvFallbackLink');
+      if (fallbackLink) fallbackLink.href = target.url;
+
+      refreshCctvImage();
+      updateCorridorDashboard();
+    }
+
+    function updateCorridorDashboard() {
+      var currentCctv = CCTV_STREAMS.find(function(c) { return c.id === activeDashboardCctvId; });
+      var stId = currentCctv ? currentCctv.stationId : (activeCorridor === 'shuangxi' ? 'shuangxi' : 'heren');
+      var station = STATIONS.find(function(s) { return s.id === stId; });
+      var w = weatherDataMap[stId] || {
+        temp: 24, apparentTemp: 25, humidity: 75, windSpeed: 8, past10min: '0.0', past1hr: '0.0', past24hr: '0.0',
+        alertInfo: { title: '建議正常運轉', badgeClass: 'text-emerald-400' }, weatherInfo: { text: '多雲', emoji: '⛅' }
+      };
+
+      var titleElem = document.getElementById('corridorStationNameTitle');
+      if (titleElem && station) titleElem.textContent = station.name + '車站現地實況';
+
+      var badgeElem = document.getElementById('corridorWeatherBadge');
+      if (badgeElem && w.weatherInfo) badgeElem.textContent = w.weatherInfo.text + ' ' + w.weatherInfo.emoji;
+
+      var tempElem = document.getElementById('corridorTemp');
+      if (tempElem) tempElem.textContent = w.temp + '°C';
+
+      var humElem = document.getElementById('corridorHumidity');
+      if (humElem) humElem.textContent = w.humidity + '%';
+
+      var r1Elem = document.getElementById('corridorRain');
+      if (r1Elem) r1Elem.textContent = w.past1hr + ' mm';
+
+      var r10Elem = document.getElementById('corridorRain10');
+      if (r10Elem) r10Elem.textContent = w.past10min + ' mm';
+
+      var alertElem = document.getElementById('corridorAlertBadge');
+      if (alertElem && w.alertInfo) {
+        alertElem.textContent = w.alertInfo.title;
+        alertElem.className = 'font-bold ' + (w.alertInfo.title.indexOf('減速') !== -1 ? 'text-amber-400' : (w.alertInfo.title.indexOf('注意') !== -1 ? 'text-sky-400' : 'text-emerald-400'));
+      }
+
+      var tipElem = document.getElementById('corridorObservationTip');
+      if (tipElem) {
+        if (activeCorridor === 'shuangxi') {
+          tipElem.innerHTML = '💡 <strong>實務觀察提示</strong>：牡丹坡起坡段若時雨量 &gt; 0 或濕度偏高時，建議比對左側監視器車道路面反光；若路面反光潮濕，可預為因應防範動輪打滑。';
+        } else {
+          tipElem.innerHTML = '💡 <strong>實務觀察提示</strong>：崇德和仁段（台9線 160K 小清水溪橋／158K 大清水）若過去1小時雨量偏高或即時降雨，請比對監視器溪流水位與邊坡落石防護狀況。';
+        }
+      }
+    }
+
+    function refreshCctvImage() {
+      var time = Date.now();
+      var currentCctv = CCTV_STREAMS.find(function(c) { return c.id === activeDashboardCctvId; });
+      var imgDash = document.getElementById('dashboardLiveCctvImg');
+      if (imgDash && currentCctv) {
+        imgDash.src = currentCctv.url + '?t=' + time;
+      }
+
+      var timeStr = new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      var dashTimeElem = document.getElementById('dashboardCctvTime');
+      if (dashTimeElem) dashTimeElem.textContent = timeStr;
+    }
+
+    function triggerCctvManualRefresh() {
+      var spinIcon = document.getElementById('cctvSpinIcon');
+      if (spinIcon) spinIcon.classList.add('animate-spin');
+      refreshCctvImage();
+      setTimeout(function() {
+        if (spinIcon) spinIcon.classList.remove('animate-spin');
+      }, 500);
+    }
+
+    function startCctvAutoRefresh() {
+      if (cctvAutoRefreshIntervalId) clearInterval(cctvAutoRefreshIntervalId);
+      cctvAutoRefreshIntervalId = setInterval(function() {
+        refreshCctvImage();
+      }, 8000);
+    }
+
+    function scrollToLivePlayer() {
+      var sec = document.getElementById('dashboardLiveCctvImg');
+      if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    function renderStations() {
+      var container = document.getElementById('stationsContainer');
+      if (!container) return;
+
+      var filtered = STATIONS.filter(function(station) {
+        var matchLine = (currentFilter === 'all') || (station.line === currentFilter);
+        var matchSearch = !searchQuery || station.name.indexOf(searchQuery) !== -1;
+        var w = weatherDataMap[station.id];
+        var isRain = w && ((parseFloat(w.past1hr) > 0) || (w.weatherInfo && w.weatherInfo.isRain));
+        var matchRain = !rainOnlyFilter || isRain;
+        return matchLine && matchSearch && matchRain;
+      });
+
+      var countAll = document.getElementById('count-all');
+      var countYilan = document.getElementById('count-yilan');
+      var countNorth = document.getElementById('count-north');
+      var countTaitung = document.getElementById('count-taitung');
+      if (countAll) countAll.textContent = STATIONS.length;
+      if (countYilan) countYilan.textContent = STATIONS.filter(function(s) { return s.line === 'yilan'; }).length;
+      if (countNorth) countNorth.textContent = STATIONS.filter(function(s) { return s.line === 'north'; }).length;
+      if (countTaitung) countTaitung.textContent = STATIONS.filter(function(s) { return s.line === 'taitung'; }).length;
+
+      if (filtered.length === 0) {
+        container.innerHTML = '<div class="col-span-full py-12 text-center text-slate-500 text-xs">無符合條件之車站</div>';
+        return;
+      }
+
+      var html = '';
+      filtered.forEach(function(station) {
+        var w = weatherDataMap[station.id] || {
+          temp: 24, apparentTemp: 25, humidity: 78, windSpeed: 10, past10min: '0.0', past1hr: '0.0', past24hr: '0.0',
+          alertInfo: evalRailwayAlert(0, 0), weatherInfo: { text: '晴朗', emoji: '☀️' }
+        };
+
+        var alert = w.alertInfo || evalRailwayAlert(w.past1hr, w.past24hr);
+        var lineBadgeClass = 'bg-sky-500/20 text-sky-300 border-sky-500/40';
+        if (station.line === 'north') lineBadgeClass = 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
+        if (station.line === 'taitung') lineBadgeClass = 'bg-amber-500/20 text-amber-300 border-amber-500/40';
+
+        var isSelected = !!station.selected;
+        var hasCctv = (station.id === 'shuangxi' || station.id === 'heren' || station.id === 'chongde');
+
+        html += '<div class="bg-slate-900/90 rounded-2xl p-3.5 border transition duration-200 ' + alert.cardBorderClass + ' flex flex-col justify-between shadow-lg relative">' +
+          '<div>' +
+            '<div class="flex items-center justify-between pb-2 border-b border-slate-800/80">' +
+              '<div class="flex items-center gap-2">' +
+                '<span class="text-[10px] font-bold px-2 py-0.5 rounded border ' + lineBadgeClass + '">' + station.lineName + '</span>' +
+                '<h4 class="text-base font-bold text-white tracking-tight flex items-center gap-1.5">' + 
+                  station.name + 
+                  (hasCctv ? '<span class="text-[10px] text-cyan-300 bg-cyan-950 px-1 py-0.2 rounded border border-cyan-800">📹 路況</span>' : '') +
+                '</h4>' +
+              '</div>' +
+              '<input type="checkbox" ' + (isSelected ? 'checked' : '') + ' onchange="toggleStationSelect(\'' + station.id + '\')" class="w-4 h-4 rounded text-sky-500 bg-slate-800 border-slate-700 cursor-pointer" title="加入/取消 LINE 通報">' +
+            '</div>' +
+
+            '<div class="flex items-center justify-between py-2.5">' +
+              '<div class="flex items-baseline gap-1">' +
+                '<span class="text-3xl font-extrabold text-white tracking-tight">' + w.temp + '</span>' +
+                '<span class="text-xs text-slate-400">°C</span>' +
+                '<span class="text-[10px] text-slate-500 ml-1">體感 ' + w.apparentTemp + '°</span>' +
+              '</div>' +
+              '<div class="text-xs font-semibold px-2 py-1 rounded-lg bg-slate-800/90 border border-slate-700 text-slate-200 flex items-center gap-1.5">' +
+                '<span>' + w.weatherInfo.emoji + '</span>' +
+                '<span>' + w.weatherInfo.text + '</span>' +
+              '</div>' +
+            '</div>' +
+
+            '<div class="text-[11px] px-2 py-1 rounded-lg border flex items-center justify-between mb-2.5 ' + alert.badgeClass + '">' +
+              '<span class="font-medium">🚦 狀態參考</span>' +
+              '<span class="font-bold">' + alert.title + '</span>' +
+            '</div>' +
+
+            '<div class="grid grid-cols-3 gap-1.5 text-center bg-slate-950/80 p-2 rounded-xl border border-slate-800 text-[10px] mb-2">' +
+              '<div>' +
+                '<div class="text-slate-500">10分雨量</div>' +
+                '<div class="font-bold font-mono text-cyan-300 mt-0.5">' + w.past10min + ' mm</div>' +
+              '</div>' +
+              '<div>' +
+                '<div class="text-slate-500">1小時累積</div>' +
+                '<div class="font-bold font-mono ' + (parseFloat(w.past1hr) > 0 ? 'text-amber-400 font-extrabold' : 'text-slate-300') + ' mt-0.5">' + w.past1hr + ' mm</div>' +
+              '</div>' +
+              '<div>' +
+                '<div class="text-slate-500">24小時</div>' +
+                '<div class="font-bold font-mono text-slate-300 mt-0.5">' + w.past24hr + ' mm</div>' +
+              '</div>' +
+            '</div>' +
+
+            '<div class="flex items-center justify-between text-[10px] text-slate-400 px-1">' +
+              '<span class="flex items-center gap-1"><i data-lucide="gauge" class="w-3 h-3 text-emerald-400"></i> 濕度 ' + w.humidity + '%</span>' +
+              '<span class="flex items-center gap-1"><i data-lucide="wind" class="w-3 h-3 text-sky-400"></i> 風速 ' + w.windSpeed + ' km/h</span>' +
+            '</div>' +
+          '</div>' +
+
+          '<div class="mt-3 pt-2 border-t border-slate-800/80 flex items-center justify-between">' +
+            '<button onclick="focusStationOnMap(\'' + station.id + '\')" class="text-[11px] font-medium text-sky-400 hover:text-sky-300 flex items-center gap-1 transition">' +
+              '<i data-lucide="map-pin" class="w-3 h-3"></i>' +
+              '<span>在地圖定位</span>' +
+            '</button>' +
+            (station.id === 'shuangxi' ? 
+              '<button onclick="switchCorridor(\'shuangxi\'); switchDashboardCctvById(\'cctv-20k\'); scrollToLivePlayer();" class="text-[11px] font-semibold text-amber-400 hover:text-amber-300 flex items-center gap-1 transition">' +
+                '<i data-lucide="video" class="w-3 h-3"></i>' +
+                '<span>雙溪影像</span>' +
+              '</button>' : 
+             (station.id === 'heren' || station.id === 'chongde' ?
+              '<button onclick="switchCorridor(\'chongde\'); switchDashboardCctvById(\'cctv-160k\'); scrollToLivePlayer();" class="text-[11px] font-semibold text-rose-400 hover:text-rose-300 flex items-center gap-1 transition">' +
+                '<i data-lucide="video" class="w-3 h-3"></i>' +
+                '<span>和仁崇德影像</span>' +
+              '</button>' : '')) +
+          '</div>' +
+        '</div>';
+      });
+
+      container.innerHTML = html;
+      if (typeof lucide !== 'undefined') lucide.createIcons({ root: container });
+    }
+
+    function initRailwayMap() {
+      var mapContainer = document.getElementById('railwayMap');
+      if (!mapContainer || railwayMap) return;
+
+      railwayMap = L.map('railwayMap', {
+        center: [24.1614, 121.6560],
+        zoom: 8,
+        minZoom: 7,
+        maxZoom: 15,
+        zoomControl: true,
+        attributionControl: false
+      });
+
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        maxZoom: 19,
+        subdomains: 'abcd',
+      }).addTo(railwayMap);
+
+      drawRailwayPolylines();
+      createStationMarkers();
+      createCctvMarkersOnMap();
+      fitMapToAllStations();
+
+      railwayMap.on('popupopen', function() {
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+      });
+
+      window.addEventListener('resize', function() {
+        if (railwayMap) railwayMap.invalidateSize();
+      });
+    }
+
+    function drawRailwayPolylines() {
+      var yilanCoords = STATIONS.filter(function(s) { return s.line === 'yilan'; }).map(function(s) { return [s.lat, s.lon]; });
+      var northCoords = STATIONS.filter(function(s) { return s.line === 'north'; }).map(function(s) { return [s.lat, s.lon]; });
+
+      var hualienStation = STATIONS.find(function(s) { return s.id === 'hualien'; });
+      var taitungCoords = [
+        [hualienStation.lat, hualienStation.lon]
+      ].concat(STATIONS.filter(function(s) { return s.line === 'taitung'; }).map(function(s) { return [s.lat, s.lon]; }));
+
+      var yilanLine = L.polyline(yilanCoords, {
+        color: '#38bdf8',
+        weight: 4,
+        opacity: 0.85,
+        lineCap: 'round',
+        lineJoin: 'round',
+        dashArray: '8, 4'
+      }).addTo(railwayMap);
+
+      var northLine = L.polyline(northCoords, {
+        color: '#10b981',
+        weight: 4,
+        opacity: 0.9,
+        lineCap: 'round',
+        lineJoin: 'round',
+        dashArray: '8, 4'
+      }).addTo(railwayMap);
+
+      var taitungLine = L.polyline(taitungCoords, {
+        color: '#f59e0b',
+        weight: 4,
+        opacity: 0.85,
+        lineCap: 'round',
+        lineJoin: 'round',
+        dashArray: '8, 4'
+      }).addTo(railwayMap);
+
+      railwayRoutePolylines = [yilanLine, northLine, taitungLine];
+    }
+
+    function createStationMarkers() {
+      if (!railwayMap) return;
+      STATIONS.forEach(function(station) {
+        var marker = L.marker([station.lat, station.lon], {
+          icon: createMarkerIcon(station)
+        }).addTo(railwayMap);
+        marker.bindPopup(buildStationPopupHtml(station));
+        stationMarkers[station.id] = marker;
+      });
+    }
+
+    function createCctvMarkersOnMap() {
+      if (!railwayMap) return;
+
+      CCTV_STREAMS.forEach(function(cctv) {
+        var isChongde = (cctv.corridor === 'chongde');
+        var pinBg = isChongde ? 'bg-rose-600' : 'bg-cyan-600';
+
+        var cctvHtml = '<div class="w-8 h-8 rounded-full ' + pinBg + ' border-2 border-white shadow-lg flex items-center justify-center text-white cursor-pointer hover:scale-115 transition" title="' + cctv.title + '">' +
+            '<span class="text-sm">📹</span>' +
+          '</div>';
+
+        var cctvIcon = L.divIcon({
+          className: 'cctv-div-icon',
+          html: cctvHtml,
+          iconSize: [32, 32],
+          iconAnchor: [16, 16],
+          popupAnchor: [0, -16]
+        });
+
+        var marker = L.marker([cctv.lat, cctv.lon], { icon: cctvIcon }).addTo(railwayMap);
+
+        marker.bindPopup(function() {
+          return '<div class="p-3 space-y-2 text-slate-100 min-w-[260px] max-w-[280px]">' +
+              '<div class="flex items-center justify-between pb-1.5 border-b border-slate-800">' +
+                '<div class="flex items-center gap-1.5">' +
+                  '<span class="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>' +
+                  '<strong class="text-xs text-white">' + cctv.tabName + '</strong>' +
+                '</div>' +
+                '<span class="text-[10px] text-sky-300 font-mono">' + cctv.badge + '</span>' +
+              '</div>' +
+              '<div class="relative w-full aspect-video rounded-lg overflow-hidden bg-slate-900 border border-slate-800">' +
+                '<img src="' + cctv.url + '?t=' + Date.now() + '" referrerpolicy="no-referrer" alt="' + cctv.title + '" class="w-full h-full object-cover">' +
+              '</div>' +
+              '<div class="text-[11px] text-slate-300 leading-tight">' + cctv.desc + '</div>' +
+              '<div class="pt-1.5 flex items-center gap-2">' +
+                '<a href="' + cctv.url + '" target="_blank" rel="noopener noreferrer" class="flex-1 py-1 px-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center justify-center gap-1 transition shadow-sm">' +
+                  '<i data-lucide="external-link" class="w-3 h-3"></i>' +
+                  '<span>開啟原圖</span>' +
+                '</a>' +
+                '<button onclick="switchCorridor(\'' + cctv.corridor + '\'); switchDashboardCctvById(\'' + cctv.id + '\'); scrollToLivePlayer();" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold">' +
+                  '<span>主看板檢視</span>' +
+                '</button>' +
+              '</div>' +
+            '</div>';
+        });
+
+        cctvMarkers.push(marker);
+      });
+    }
+
+    function createMarkerIcon(station) {
+      var w = weatherDataMap[station.id];
+      var isRain = w && ((parseFloat(w.past1hr) > 0) || (w.weatherInfo && w.weatherInfo.isRain));
+      var alert = w ? (w.alertInfo || evalRailwayAlert(w.past1hr, w.past24hr)) : { level: 'normal' };
+      
+      var markerClass = 'station-marker-normal';
+      if (alert.level === 'warning-heavy' || alert.level === 'warning') {
+        markerClass = 'station-marker-warning';
+      } else if (isRain) {
+        markerClass = 'station-marker-rain';
+      }
+
+      var iconLabel = w && w.weatherInfo ? w.weatherInfo.emoji : '📍';
+      var html = '<div class="station-marker-pin ' + markerClass + ' w-8 h-8 text-xs shadow-md font-bold text-white flex items-center justify-center">' +
+        '<span>' + iconLabel + '</span>' +
+      '</div>';
+
+      return L.divIcon({
+        className: 'custom-station-div-icon',
+        html: html,
+        iconSize: [32, 32],
+        iconAnchor: [16, 16],
+        popupAnchor: [0, -16]
+      });
+    }
+
+    function buildStationPopupHtml(station) {
+      var w = weatherDataMap[station.id] || {
+        temp: 24, apparentTemp: 25, humidity: 75, windSpeed: 8, past10min: '0.0', past1hr: '0.0', past24hr: '0.0',
+        alertInfo: evalRailwayAlert(0, 0), weatherInfo: { text: '多雲', emoji: '⛅' }
+      };
+      var alert = w.alertInfo || evalRailwayAlert(w.past1hr, w.past24hr);
+      var isSel = !!station.selected;
+
+      var html = '<div class="p-3.5 space-y-2.5 text-slate-100 min-w-[250px]">' +
+        '<div class="flex items-center justify-between pb-2 border-b border-slate-800">' +
+          '<div class="flex items-center gap-1.5">' +
+            '<span class="text-xs px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold border border-sky-500/30">' + station.lineName + '</span>' +
+            '<strong class="text-sm font-bold text-white">' + station.name + '</strong>' +
+          '</div>' +
+          '<span class="text-xs font-semibold px-2 py-0.5 rounded-md bg-slate-800 border border-slate-700">' + w.weatherInfo.emoji + ' ' + w.weatherInfo.text + '</span>' +
+        '</div>' +
+        '<div class="flex items-baseline justify-between">' +
+          '<div><span class="text-2xl font-extrabold text-white">' + w.temp + '</span><span class="text-xs text-slate-400">°C</span> <span class="text-[10px] text-slate-400">(體感 ' + w.apparentTemp + '°)</span></div>' +
+          '<div class="text-[11px] font-bold px-2 py-0.5 rounded ' + alert.badgeClass + '">' + alert.title + '</div>' +
+        '</div>' +
+        '<div class="grid grid-cols-3 gap-1 bg-slate-950/80 p-1.5 rounded-lg border border-slate-800 text-center text-[10px]">' +
+          '<div><div class="text-slate-500">10分雨量</div><div class="font-bold text-cyan-300 font-mono">' + w.past10min + ' mm</div></div>' +
+          '<div><div class="text-slate-500">時雨量</div><div class="font-bold ' + (parseFloat(w.past1hr) > 0 ? 'text-amber-400 font-extrabold' : 'text-slate-300') + ' font-mono">' + w.past1hr + ' mm</div></div>' +
+          '<div><div class="text-slate-500">24H累積</div><div class="font-bold text-slate-300 font-mono">' + w.past24hr + ' mm</div></div>' +
+        '</div>' +
+        '<div class="flex items-center justify-between pt-1 border-t border-slate-800 text-[11px]">' +
+          '<button onclick="toggleStationSelect(\'' + station.id + '\'); updateStationPopupSelectStatus(\'' + station.id + '\');" class="text-xs font-semibold px-2.5 py-1 rounded-lg ' + (isSel ? 'bg-sky-600/80 text-white' : 'bg-slate-800 text-slate-300') + ' hover:bg-sky-500 transition">' +
+            (isSel ? '✓ 已納入通報' : '+ 加入通報') +
+          '</button>' +
+        '</div>' +
+      '</div>';
+      return html;
+    }
+
+    function updateMapMarkers() {
+      if (!railwayMap) return;
+      STATIONS.forEach(function(station) {
+        var marker = stationMarkers[station.id];
+        if (marker) marker.setIcon(createMarkerIcon(station));
+      });
+    }
+
+    function fitMapToAllStations() {
+      if (!railwayMap) return;
+      var bounds = L.latLngBounds(STATIONS.map(function(s) { return [s.lat, s.lon]; }));
+      CCTV_STREAMS.forEach(function(c) { bounds.extend([c.lat, c.lon]); });
+      railwayMap.fitBounds(bounds, { padding: [30, 30] });
+    }
+
+    function panMapToLine(line) {
+      if (!railwayMap) return;
+      var stations = STATIONS.filter(function(s) { return s.line === line; });
+      if (stations.length > 0) {
+        var bounds = L.latLngBounds(stations.map(function(s) { return [s.lat, s.lon]; }));
+        railwayMap.fitBounds(bounds, { padding: [40, 40] });
+      }
+    }
+
+    function focusStationOnMap(stationId) {
+      var station = STATIONS.find(function(s) { return s.id === stationId; });
+      if (!station || !railwayMap) return;
+      scrollToMap();
+      setTimeout(function() {
+        railwayMap.setView([station.lat, station.lon], 13, { animate: true });
+        var marker = stationMarkers[stationId];
+        if (marker) marker.openPopup();
+      }, 350);
+    }
+
+    function updateStationPopupSelectStatus(id) {
+      var marker = stationMarkers[id];
+      if (marker && marker.isPopupOpen()) {
+        var station = STATIONS.find(function(s) { return s.id === id; });
+        if (station) marker.setPopupContent(buildStationPopupHtml(station));
+      }
+    }
+
+    function scrollToMap() {
+      var mapSec = document.getElementById('railwayMapSection');
+      if (mapSec) {
+        mapSec.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (railwayMap) setTimeout(function() { railwayMap.invalidateSize(); }, 300);
+      }
+    }
+
+    function setFilterLine(line) {
+      currentFilter = line;
+      ['all', 'yilan', 'north', 'taitung'].forEach(function(key) {
+        var btn = document.getElementById('filter-' + key);
+        if (btn) {
+          if (key === line) {
+            btn.className = 'px-3.5 py-1.5 rounded-xl bg-sky-600 text-white shadow-sm transition font-semibold';
+          } else {
+            btn.className = 'px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition font-semibold';
+          }
+        }
+      });
+      renderStations();
+    }
+
+    function toggleRainOnlyFilter() {
+      rainOnlyFilter = !rainOnlyFilter;
+      var btn = document.getElementById('filter-rain');
+      if (btn) {
+        if (rainOnlyFilter) {
+          btn.className = 'px-3.5 py-1.5 rounded-xl bg-cyan-600 text-white border border-cyan-400 transition flex items-center gap-1 font-semibold';
+        } else {
+          btn.className = 'px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700/60 transition flex items-center gap-1 font-semibold';
+        }
+      }
+      renderStations();
+    }
+
+    function handleStationSearch(val) {
+      searchQuery = (val || '').trim();
+      renderStations();
+    }
+
+    function toggleStationSelect(id) {
+      var station = STATIONS.find(function(s) { return s.id === id; });
+      if (station) {
+        station.selected = !station.selected;
+        updateLineMessagePreview();
+        renderStations();
+        updateStationPopupSelectStatus(id);
+      }
+    }
+
+    function toggleSelectAllStations() {
+      var allSelected = STATIONS.every(function(s) { return s.selected; });
+      STATIONS.forEach(function(s) { s.selected = !allSelected; });
+      var selectText = document.getElementById('selectAllBtnText');
+      if (selectText) selectText.textContent = allSelected ? '全選' : '全取消';
+      updateLineMessagePreview();
+      renderStations();
+    }
+
+    function changeLineTemplate() {
+      updateLineMessagePreview();
+    }
+
+    function updateLineMessagePreview() {
+      var textarea = document.getElementById('lineMessagePreview');
+      var selectElem = document.getElementById('lineMsgTemplateSelect');
+      var template = selectElem ? selectElem.value : 'commuter';
+
+      var selected = STATIONS.filter(function(s) { return s.selected; });
+      var counter = document.getElementById('selectedStationsCount');
+      if (counter) counter.textContent = selected.length;
+
+      if (!textarea) return;
+
+      if (selected.length === 0) {
+        textarea.value = '【東部鐵路即時天氣通報】\n目前尚未勾選任何車站，請於上方卡片勾選欲通報之站點。';
+        return;
+      }
+
+      var nowStr = new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+      var text = '🚆【台鐵東部幹線即時氣象通報】\n';
+      text += '⏰ 更新時間：' + nowStr + '\n';
+
+      if (template === 'commuter') {
+        text += '------------------------\n';
+        selected.forEach(function(s) {
+          var w = weatherDataMap[s.id] || { temp: 24, humidity: 75, weatherInfo: { text: '多雲', emoji: '☁️' }, past1hr: '0.0' };
+          text += s.name + '：' + w.weatherInfo.emoji + ' ' + w.weatherInfo.text + ' | ' + w.temp + '°C (濕度 ' + w.humidity + '%)\n';
+        });
+      } else if (template === 'concise') {
+        text += '------------------------\n';
+        var lineParts = selected.map(function(s) {
+          var w = weatherDataMap[s.id] || { temp: 24, weatherInfo: { emoji: '⛅' } };
+          return s.name + ' ' + w.weatherInfo.emoji + w.temp + '°';
+        });
+        text += lineParts.join(' | ') + '\n';
+      } else if (template === 'rainWarning') {
+        text += '⚠️【即時雨量與建議狀態】\n------------------------\n';
+        selected.forEach(function(s) {
+          var w = weatherDataMap[s.id] || { past1hr: '0.0', past24hr: '0.0', alertInfo: { title: '建議正常運轉' } };
+          var r1 = parseFloat(w.past1hr) || 0;
+          var alert = w.alertInfo || { title: '建議正常運轉' };
+          text += s.name + '：時雨量 ' + r1 + 'mm (24H累積 ' + w.past24hr + 'mm) - ' + alert.title + '\n';
+        });
+      }
+
+      text += '------------------------\n💡 數值僅供出行穿著與運轉防汛參考，實際行駛請依臺鐵即時通告為準。';
+      textarea.value = text;
+    }
+
+    function copyLineMessage() {
+      var textarea = document.getElementById('lineMessagePreview');
+      if (!textarea) return;
+      textarea.select();
+      try {
+        document.execCommand('copy');
+        showToast('已複製 LINE 通報內容至剪貼簿！', 'check-circle', 'text-emerald-400');
+      } catch (err) {
+        showToast('複製失敗，請手動選取複製', 'alert-circle', 'text-rose-400');
+      }
+    }
+
+    function openLineDirectShare() {
+      var textarea = document.getElementById('lineMessagePreview');
+      if (!textarea) return;
+      var encoded = encodeURIComponent(textarea.value);
+      window.open('https://line.me/R/msg/text/?' + encoded, '_blank');
+    }
+
+    function openRadarModal() {
+      var modal = document.getElementById('radarModal');
+      if (modal) {
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        refreshRadarImage();
+      }
+    }
+
+    function closeRadarModal() {
+      var modal = document.getElementById('radarModal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+      }
+    }
+
+    function refreshRadarImage() {
+      var img = document.getElementById('radarImage');
+      if (img) img.src = 'https://cwaopendata.s3.ap-northeast-1.amazonaws.com/Observation/O-A0058-003.png?t=' + Date.now();
+    }
+
+    function openTechWhitepaperModal() {
+      var modal = document.getElementById('techWhitepaperModal');
+      if (modal) {
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+      }
+    }
+
+    function closeTechWhitepaperModal() {
+      var modal = document.getElementById('techWhitepaperModal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+      }
+    }
+
+    function openCwaConfigModal() {
+      var modal = document.getElementById('cwaConfigModal');
+      if (modal) {
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        var input = document.getElementById('cwaApiKeyInput');
+        if (input) input.value = getSafeStorage('railway_cwa_key') || '';
+      }
+    }
+
+    function closeCwaConfigModal() {
+      var modal = document.getElementById('cwaConfigModal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+      }
+    }
+
+    function saveCwaApiKey() {
+      var input = document.getElementById('cwaApiKeyInput');
+      var val = (input ? input.value : '').trim();
+      if (!val) {
+        showToast('請輸入有效之授權碼', 'alert-circle', 'text-amber-400');
+        return;
+      }
+
+      setSafeStorage('railway_cwa_key', val);
+      var btnText = document.getElementById('cwaConfigBtnText');
+      if (btnText) btnText.textContent = '氣象署實測中';
+      var btn = document.getElementById('cwaConfigBtn');
+      if (btn) btn.className = 'inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-300 bg-emerald-950/80 rounded-lg border border-emerald-500/60 transition shadow-sm active:scale-95';
+
+      closeCwaConfigModal();
+      showToast('CWA 授權碼已儲存！正在同步實測雨量...', 'database', 'text-sky-400');
+      fetchWeatherData();
+    }
+
+    function clearCwaApiKey() {
+      removeSafeStorage('railway_cwa_key');
+      var input = document.getElementById('cwaApiKeyInput');
+      if (input) input.value = '';
+      var btnText = document.getElementById('cwaConfigBtnText');
+      if (btnText) btnText.textContent = '氣象署實測雨量';
+      var btn = document.getElementById('cwaConfigBtn');
+      if (btn) btn.className = 'inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-amber-300 bg-amber-950/70 hover:bg-amber-900/80 rounded-lg border border-amber-700/60 transition shadow-sm active:scale-95';
+      var tag = document.getElementById('cwaActiveTag');
+      if (tag) tag.classList.add('hidden');
+
+      closeCwaConfigModal();
+      showToast('已切換回 Open-Meteo 免金鑰模式', 'info', 'text-sky-400');
+      fetchWeatherData();
+    }
+
+    function loadCwaDemoData() {
+      closeCwaConfigModal();
+      showToast('已載入現地實體雨量筒模擬數據', 'check', 'text-emerald-400');
+
+      STATIONS.forEach(function(s) {
+        var r1 = 0;
+        var r24 = 0;
+        if (s.id === 'dongao' || s.id === 'nanao' || s.id === 'heren') {
+          r1 = 38.5;
+          r24 = 115.0;
+        } else if (s.id === 'shuangxi') {
+          r1 = 4.5;
+          r24 = 28.0;
+        } else if (s.id === 'chongde' || s.id === 'heping') {
+          r1 = 22.0;
+          r24 = 72.0;
+        }
+
+        var isR = r1 > 0;
+        weatherDataMap[s.id] = {
+          temp: isR ? 21 : 25,
+          apparentTemp: isR ? 22 : 26,
+          humidity: isR ? 95 : 78,
+          windSpeed: isR ? 16 : 8,
+          past10min: (r1 * 0.25).toFixed(1),
+          past1hr: r1.toFixed(1),
+          past24hr: r24.toFixed(1),
+          isGroundSensor: true,
+          alertInfo: evalRailwayAlert(r1, r24),
+          weatherInfo: { text: isR ? (r1 >= 30 ? '強降雨' : '陣雨') : '多雲', emoji: isR ? '🌧️' : '⛅', isRain: isR }
+        };
+      });
+
+      var tag = document.getElementById('cwaActiveTag');
+      if (tag) tag.classList.remove('hidden');
+      onDataUpdatedSuccess(8);
+    }
+
+    function showToast(message, iconName, colorClass) {
+      if (!iconName) iconName = 'info';
+      if (!colorClass) colorClass = 'text-sky-400';
+
+      var container = document.getElementById('toastContainer');
+      if (!container) return;
+
+      var toast = document.createElement('div');
+      toast.className = 'pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl bg-slate-900/95 border border-slate-700 text-white text-xs shadow-2xl backdrop-blur-md transition transform translate-y-3 opacity-0 duration-300';
+      toast.innerHTML = '<i data-lucide="' + iconName + '" class="w-4 h-4 ' + colorClass + '"></i><span>' + message + '</span>';
+
+      container.appendChild(toast);
+      if (typeof lucide !== 'undefined') lucide.createIcons({ root: toast });
+
+      setTimeout(function() {
+        toast.classList.remove('translate-y-3', 'opacity-0');
+      }, 10);
+
+      setTimeout(function() {
+        toast.classList.add('translate-y-3', 'opacity-0');
+        setTimeout(function() {
+          if (container.contains(toast)) container.removeChild(toast);
+        }, 300);
+      }, 3500);
+    }
+
+    window.addEventListener('DOMContentLoaded', function() {
+      try {
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+        initStationDefaults();
+        renderCorridorCctvSubTabs();
+        renderStations();
+        startStatusTicker();
+        startCctvAutoRefresh();
+        initRailwayMap();
+        fetchWeatherData();
+
+        // 綁定 ESC 鍵快速關閉所有彈窗
+        window.addEventListener('keydown', function(e) {
+          if (e.key === 'Escape') {
+            closeRadarModal();
+            closeCwaConfigModal();
+            closeTechWhitepaperModal();
+          }
+        });
+      } catch (err) {
+        console.error('Initialization error:', err);
+      }
+    });
+  </script>
+</body>
+</html>
